@@ -4,49 +4,79 @@ from pathlib import Path
 
 import chromadb
 from openai import OpenAI
+from pypdf import PdfReader
 
+
+# ============================================================
+# PATHS
+# ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
 DATA_DIR = BASE_DIR / "data" / "manuals"
 CHROMA_DIR = BASE_DIR / "chroma_db"
+
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 COLLECTION_NAME = "bis_knowledge_base"
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 _build_lock = threading.Lock()
 
-KB_STATUS = "not_started"
-KB_STATUS_DETAIL = ""
-KB_INDEXED_CHUNKS = 0
+
+# ============================================================
+# KNOWLEDGE BASE STATUS
+# ============================================================
+
+KB_STATUS = {
+    "state": "not_started",
+    "detail": "",
+    "indexed_chunks": 0
+}
 
 
-client = chromadb.PersistentClient(
+# ============================================================
+# CHROMA
+# IMPORTANT:
+# Do NOT use Chroma's OpenAIEmbeddingFunction.
+# We provide embeddings manually using OpenAI SDK.
+# ============================================================
+
+chroma_client = chromadb.PersistentClient(
     path=str(CHROMA_DIR)
 )
 
-collection = client.get_or_create_collection(
+collection = chroma_client.get_or_create_collection(
     name=COLLECTION_NAME
 )
 
 
+# ============================================================
+# OPENAI
+# ============================================================
+
 def _get_openai_client():
+
     api_key = os.getenv("OPENAI_API_KEY")
 
     if not api_key:
-        return None
-
-    return OpenAI(api_key=api_key)
-
-
-def _embed_texts(texts):
-    openai_client = _get_openai_client()
-
-    if openai_client is None:
         raise RuntimeError(
             "OPENAI_API_KEY is not configured."
         )
 
-    response = openai_client.embeddings.create(
+    return OpenAI(
+        api_key=api_key
+    )
+
+
+def _embed_texts(texts):
+
+    client = _get_openai_client()
+
+    response = client.embeddings.create(
         model=EMBEDDING_MODEL,
         input=texts
     )
@@ -58,36 +88,125 @@ def _embed_texts(texts):
 
 
 def embed_query(query):
-    embeddings = _embed_texts([query])
+
+    embeddings = _embed_texts(
+        [query]
+    )
+
     return embeddings[0]
 
 
+# ============================================================
+# DOCUMENT TEXT EXTRACTION
+# ============================================================
+
+def extract_text(file_path):
+
+    file_path = Path(file_path)
+
+    extension = file_path.suffix.lower()
+
+    # TXT
+    if extension == ".txt":
+
+        return file_path.read_text(
+            encoding="utf-8",
+            errors="ignore"
+        )
+
+    # PDF
+    if extension == ".pdf":
+
+        reader = PdfReader(
+            str(file_path)
+        )
+
+        pages = []
+
+        for page in reader.pages:
+
+            text = page.extract_text() or ""
+
+            if text.strip():
+                pages.append(
+                    text
+                )
+
+        return "\n\n".join(pages)
+
+    raise ValueError(
+        "Unsupported file type."
+    )
+
+
+# ============================================================
+# TEXT CHUNKING
+# ============================================================
+
+def chunk_text(
+    text,
+    chunk_size=1500,
+    overlap=200
+):
+
+    text = text.strip()
+
+    if not text:
+        return []
+
+    chunks = []
+
+    start = 0
+
+    while start < len(text):
+
+        end = min(
+            start + chunk_size,
+            len(text)
+        )
+
+        chunk = text[
+            start:end
+        ].strip()
+
+        if chunk:
+            chunks.append(
+                chunk
+            )
+
+        if end >= len(text):
+            break
+
+        start = end - overlap
+
+    return chunks
+
+
+# ============================================================
+# LOAD BIS MANUALS
+# ============================================================
+
 def _load_documents():
+
     documents = []
     metadatas = []
     ids = []
 
-    pdf_files = sorted(
-        DATA_DIR.glob("*.pdf")
+    files = sorted(
+        DATA_DIR.glob("*")
     )
 
-    if not pdf_files:
-        return documents, metadatas, ids
+    chunk_counter = 0
 
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise RuntimeError(
-            "pypdf is required to read BIS PDF manuals."
-        ) from exc
+    for file_path in files:
 
-    chunk_id = 0
-
-    for pdf_file in pdf_files:
+        if file_path.suffix.lower() != ".pdf":
+            continue
 
         try:
+
             reader = PdfReader(
-                str(pdf_file)
+                str(file_path)
             )
 
             for page_number, page in enumerate(
@@ -96,54 +215,42 @@ def _load_documents():
             ):
 
                 text = page.extract_text() or ""
+
                 text = text.strip()
 
                 if not text:
                     continue
 
-                chunk_size = 1500
-                overlap = 200
+                chunks = chunk_text(
+                    text
+                )
 
-                start = 0
+                for chunk in chunks:
 
-                while start < len(text):
-
-                    end = min(
-                        start + chunk_size,
-                        len(text)
+                    documents.append(
+                        chunk
                     )
 
-                    chunk = text[
-                        start:end
-                    ].strip()
+                    metadatas.append({
+                        "filename": file_path.name,
+                        "source": str(file_path),
+                        "page": page_number,
+                        "category": "bis_manual"
+                    })
 
-                    if chunk:
-                        documents.append(
-                            chunk
-                        )
+                    ids.append(
+                        f"bis_{file_path.stem}_"
+                        f"{page_number}_"
+                        f"{chunk_counter}"
+                    )
 
-                        metadatas.append({
-                            "filename": pdf_file.name,
-                            "page": page_number
-                        })
+                    chunk_counter += 1
 
-                        ids.append(
-                            f"{pdf_file.stem}-"
-                            f"{page_number}-"
-                            f"{chunk_id}"
-                        )
+        except Exception as error:
 
-                        chunk_id += 1
-
-                    if end >= len(text):
-                        break
-
-                    start = end - overlap
-
-        except Exception as exc:
             print(
                 f"Warning: failed to read "
-                f"{pdf_file.name}: {exc}"
+                f"{file_path.name}: {error}"
             )
 
     return (
@@ -153,57 +260,53 @@ def _load_documents():
     )
 
 
-def build_knowledge_base():
+# ============================================================
+# BUILD KNOWLEDGE BASE
+# ============================================================
+
+def ensure_knowledge_base():
+
     global KB_STATUS
-    global KB_STATUS_DETAIL
-    global KB_INDEXED_CHUNKS
 
     with _build_lock:
 
-        if (
-            KB_STATUS == "ready"
-            and collection.count() > 0
-        ):
-            return
-
-        api_key = os.getenv(
-            "OPENAI_API_KEY"
-        )
-
-        if not api_key:
-            KB_STATUS = "skipped_no_api_key"
-
-            KB_STATUS_DETAIL = (
-                "OPENAI_API_KEY is not set, "
-                "so the knowledge base "
-                "was not built."
-            )
-
-            KB_INDEXED_CHUNKS = 0
-
-            return
-
         try:
 
-            existing_count = collection.count()
+            existing_count = (
+                collection.count()
+            )
 
             if existing_count > 0:
 
-                KB_STATUS = "ready"
+                KB_STATUS["state"] = "ready"
 
-                KB_STATUS_DETAIL = (
+                KB_STATUS["detail"] = (
                     "Existing indexed data found."
                 )
 
-                KB_INDEXED_CHUNKS = (
+                KB_STATUS["indexed_chunks"] = (
                     existing_count
                 )
 
                 return
 
-            KB_STATUS = "building"
+            if not os.getenv("OPENAI_API_KEY"):
 
-            KB_STATUS_DETAIL = (
+                KB_STATUS["state"] = (
+                    "skipped_no_api_key"
+                )
+
+                KB_STATUS["detail"] = (
+                    "OPENAI_API_KEY is not configured."
+                )
+
+                KB_STATUS["indexed_chunks"] = 0
+
+                return
+
+            KB_STATUS["state"] = "building"
+
+            KB_STATUS["detail"] = (
                 "Reading BIS manuals..."
             )
 
@@ -213,28 +316,29 @@ def build_knowledge_base():
 
             if not documents:
 
-                KB_STATUS = "empty"
+                KB_STATUS["state"] = "empty"
 
-                KB_STATUS_DETAIL = (
-                    "No document chunks "
-                    "were found."
+                KB_STATUS["detail"] = (
+                    "No BIS PDF documents were found."
                 )
 
-                KB_INDEXED_CHUNKS = 0
+                KB_STATUS["indexed_chunks"] = 0
 
                 return
 
             batch_size = 32
 
+            total = len(documents)
+
             for start in range(
                 0,
-                len(documents),
+                total,
                 batch_size
             ):
 
                 end = min(
                     start + batch_size,
-                    len(documents)
+                    total
                 )
 
                 batch_documents = (
@@ -249,10 +353,10 @@ def build_knowledge_base():
                     ids[start:end]
                 )
 
-                KB_STATUS_DETAIL = (
+                KB_STATUS["detail"] = (
                     f"Embedding chunks "
                     f"{start + 1}-{end} "
-                    f"of {len(documents)}..."
+                    f"of {total}..."
                 )
 
                 embeddings = _embed_texts(
@@ -266,76 +370,90 @@ def build_knowledge_base():
                     embeddings=embeddings
                 )
 
-            KB_INDEXED_CHUNKS = (
-                collection.count()
+            indexed = collection.count()
+
+            KB_STATUS["state"] = "ready"
+
+            KB_STATUS["detail"] = (
+                f"Knowledge base ready with "
+                f"{indexed} chunks."
             )
 
-            KB_STATUS = "ready"
-
-            KB_STATUS_DETAIL = (
-                f"Knowledge base ready "
-                f"with {KB_INDEXED_CHUNKS} "
-                f"chunks."
+            KB_STATUS["indexed_chunks"] = (
+                indexed
             )
 
-        except Exception as exc:
+            print(
+                f"Knowledge base ready: "
+                f"{indexed} chunks"
+            )
 
-            KB_STATUS = "error"
+        except Exception as error:
 
-            KB_STATUS_DETAIL = (
+            KB_STATUS["state"] = "error"
+
+            KB_STATUS["detail"] = (
                 f"Knowledge base build failed: "
-                f"{exc}"
+                f"{error}"
             )
 
-            KB_INDEXED_CHUNKS = (
-                collection.count()
+            try:
+                KB_STATUS["indexed_chunks"] = (
+                    collection.count()
+                )
+            except Exception:
+                KB_STATUS["indexed_chunks"] = 0
+
+            print(
+                f"Knowledge base error: {error}"
             )
 
-            raise
 
-
-def get_collection():
-    return collection
-
-
-def get_kb_status():
-    return {
-        "status": KB_STATUS,
-        "detail": KB_STATUS_DETAIL,
-        "indexed_chunks": KB_INDEXED_CHUNKS
-    }
-
+# ============================================================
+# STATUS MESSAGE
+# ============================================================
 
 def get_status_message_if_not_ready():
 
-    if KB_STATUS == "ready":
+    state = KB_STATUS["state"]
+
+    if state == "ready":
         return None
 
-    if KB_STATUS == "building":
+    if state == "building":
         return (
             "The BIS knowledge base is still "
             "being built. Please try again "
             "in a moment."
         )
 
-    if KB_STATUS == "skipped_no_api_key":
+    if state == "skipped_no_api_key":
         return (
             "OPENAI_API_KEY is not configured."
         )
 
-    if KB_STATUS == "empty":
+    if state == "empty":
         return (
             "No BIS documents were found "
             "in the knowledge base."
         )
 
-    if KB_STATUS == "error":
+    if state == "error":
         return (
-            f"The BIS knowledge base failed "
-            f"to build: {KB_STATUS_DETAIL}"
+            "The knowledge base failed to build: "
+            + KB_STATUS["detail"]
         )
 
     return (
-        "The BIS knowledge base is not ready "
-        "yet. Please try again shortly."
+        "The BIS knowledge base is not ready yet. "
+        "Please try again shortly."
     )
+
+
+# ============================================================
+# GET COLLECTION
+# ============================================================
+
+def get_collection():
+
+    return collection
