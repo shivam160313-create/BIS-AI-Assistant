@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shutil
 from contextlib import asynccontextmanager
@@ -30,7 +31,8 @@ from backend.vector_store import (
     chunk_text,
     collection,
     ensure_knowledge_base,
-    BASE_DIR
+    BASE_DIR,
+    KB_STATUS
 )
 
 
@@ -39,15 +41,20 @@ UPLOAD_FOLDER = BASE_DIR / "data" / "uploads"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # On startup: if the Chroma collection is empty - which is exactly what
-    # happens on a brand-new FastAPI Cloud deployment with no persisted
-    # chroma_db - automatically build it from the bundled BIS PDFs in data/.
-    # Any failure here is logged, not raised, so a knowledge-base problem
-    # never prevents the API itself from coming up (check /health instead).
-    try:
-        ensure_knowledge_base()
-    except Exception as error:
-        print(f"Knowledge base build failed on startup: {error}")
+    # IMPORTANT: this must never block.
+    #
+    # ensure_knowledge_base() is a synchronous, potentially slow function
+    # (it reads 19 PDFs and calls the OpenAI embeddings API). Running it
+    # directly here - or with `await` on a coroutine that does the work
+    # inline - would delay FastAPI's ASGI "startup complete" signal, which
+    # is exactly what made FastAPI Cloud's readiness check fail and loop
+    # the container.
+    #
+    # asyncio.to_thread() runs it in a worker thread; asyncio.create_task()
+    # schedules that without waiting for it. This coroutine reaches `yield`
+    # (and the app becomes ready to serve /health and everything else)
+    # essentially instantly, while indexing continues in the background.
+    asyncio.create_task(asyncio.to_thread(ensure_knowledge_base))
 
     yield
 
@@ -93,19 +100,40 @@ def root():
 
 @app.get("/health")
 def health():
+    # Always returns fast and always returns 200 - this endpoint reports
+    # status, it doesn't gate on the knowledge base being ready. FastAPI
+    # Cloud's readiness check hits this immediately on startup.
 
     try:
         indexed_chunks = collection.count()
-        knowledge_base_status = "ready" if indexed_chunks > 0 else "empty"
-    except Exception as error:
+    except Exception:
         indexed_chunks = 0
-        knowledge_base_status = f"error: {error}"
 
     return {
         "status": "healthy",
-        "knowledge_base": knowledge_base_status,
+        "knowledge_base": KB_STATUS["state"],
+        "knowledge_base_detail": KB_STATUS["detail"],
         "indexed_chunks": indexed_chunks,
         "openai_configured": bool(os.getenv("OPENAI_API_KEY"))
+    }
+
+
+@app.post("/admin/rebuild-index")
+def rebuild_index():
+    """
+    Manually re-trigger a knowledge-base build in the background, e.g.
+    after setting OPENAI_API_KEY without wanting to wait for a restart.
+
+    Note: this has no authentication. If you expose this publicly long
+    term, put an auth dependency on it - it's included here as an
+    operational convenience, not a hardened admin API.
+    """
+
+    asyncio.create_task(asyncio.to_thread(ensure_knowledge_base))
+
+    return {
+        "message": "Knowledge base rebuild triggered in the background.",
+        "current_status": KB_STATUS["state"]
     }
 
 

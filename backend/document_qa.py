@@ -1,6 +1,7 @@
 import time
 
 from backend.openai_client import get_client, DEFAULT_MODEL
+from backend.vector_store import get_status_message_if_not_ready
 from backend.retriever import (
     retrieve_documents,
     build_context,
@@ -20,11 +21,17 @@ def ask_document(question: str):
             "question": question,
             "answer": "Please enter a question.",
             "sources": [],
-            "timing": {
-                "retrieval": 0,
-                "ai": 0,
-                "total": 0
-            }
+            "timing": {"retrieval": 0, "ai": 0, "total": 0}
+        }
+
+    not_ready = get_status_message_if_not_ready()
+
+    if not_ready:
+        return {
+            "question": question,
+            "answer": not_ready,
+            "sources": [],
+            "timing": {"retrieval": 0, "ai": 0, "total": 0}
         }
 
     retrieval_start = time.perf_counter()

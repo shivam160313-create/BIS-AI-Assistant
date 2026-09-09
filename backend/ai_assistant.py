@@ -1,7 +1,7 @@
 import time
 
 from backend.openai_client import get_client, DEFAULT_MODEL
-from backend.vector_store import collection
+from backend.vector_store import collection, get_status_message_if_not_ready
 
 
 def get_sources(results):
@@ -40,13 +40,23 @@ def get_context(query):
     return results, context, retrieval_time
 
 
+def _empty_timing():
+    return {"retrieval": 0, "openai": 0, "total": 0}
+
+
+def _not_ready_response(query, message, key="question"):
+    return {
+        key: query,
+        "answer": message,
+        "sources": [],
+        "timing": _empty_timing()
+    }
+
+
 def _error_response(query, results, retrieval_time, total_start, error, key="question"):
     return {
         key: query,
-        "answer": (
-            "The AI service is not available right now: "
-            f"{error}"
-        ),
+        "answer": f"The AI service is not available right now: {error}",
         "sources": get_sources(results),
         "timing": {
             "retrieval": round(retrieval_time, 2),
@@ -57,6 +67,11 @@ def _error_response(query, results, retrieval_time, total_start, error, key="que
 
 
 def ask_ai(query, mode="assistant"):
+
+    not_ready = get_status_message_if_not_ready()
+
+    if not_ready:
+        return _not_ready_response(query, not_ready)
 
     total_start = time.perf_counter()
 
@@ -147,6 +162,11 @@ def compliance_guide(query):
 
 
 def search_standards(product):
+
+    not_ready = get_status_message_if_not_ready()
+
+    if not_ready:
+        return _not_ready_response(product, not_ready, key="product")
 
     total_start = time.perf_counter()
 
