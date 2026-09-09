@@ -1,20 +1,10 @@
 import time
 
-from dotenv import load_dotenv
-from openai import OpenAI
-
+from backend.openai_client import get_client, DEFAULT_MODEL
 from backend.retriever import (
     retrieve_documents,
     build_context,
     get_source_names
-)
-
-
-load_dotenv()
-
-
-client = OpenAI(
-    timeout=30.0
 )
 
 
@@ -44,10 +34,7 @@ def ask_document(question: str):
         n_results=5
     )
 
-    retrieval_time = (
-        time.perf_counter()
-        - retrieval_start
-    )
+    retrieval_time = time.perf_counter() - retrieval_start
 
     if not retrieved_documents:
 
@@ -61,20 +48,12 @@ def ask_document(question: str):
             "timing": {
                 "retrieval": round(retrieval_time, 2),
                 "ai": 0,
-                "total": round(
-                    time.perf_counter() - start_time,
-                    2
-                )
+                "total": round(time.perf_counter() - start_time, 2)
             }
         }
 
-    context = build_context(
-        retrieved_documents
-    )
-
-    sources = get_source_names(
-        retrieved_documents
-    )
+    context = build_context(retrieved_documents)
+    sources = get_source_names(retrieved_documents)
 
     prompt = f"""
 You are the Document Q&A module of a
@@ -107,43 +86,50 @@ BIS DOCUMENT SOURCES:
 {context}
 """
 
+    try:
+        client = get_client()
+    except RuntimeError as error:
+        return {
+            "question": question,
+            "answer": f"The AI service is not available right now: {error}",
+            "sources": sources,
+            "timing": {
+                "retrieval": round(retrieval_time, 2),
+                "ai": 0,
+                "total": round(time.perf_counter() - start_time, 2)
+            }
+        }
+
     ai_start = time.perf_counter()
 
-    response = client.responses.create(
-        model="gpt-5.6-luna",
-        input=prompt,
-        reasoning={
-            "effort": "none"
-        },
-        max_output_tokens=350
-    )
+    try:
+        response = client.responses.create(
+            model=DEFAULT_MODEL,
+            input=prompt,
+            max_output_tokens=350
+        )
+    except Exception as error:
+        return {
+            "question": question,
+            "answer": f"The AI service returned an error: {error}",
+            "sources": sources,
+            "timing": {
+                "retrieval": round(retrieval_time, 2),
+                "ai": round(time.perf_counter() - ai_start, 2),
+                "total": round(time.perf_counter() - start_time, 2)
+            }
+        }
 
-    ai_time = (
-        time.perf_counter()
-        - ai_start
-    )
-
-    total_time = (
-        time.perf_counter()
-        - start_time
-    )
+    ai_time = time.perf_counter() - ai_start
+    total_time = time.perf_counter() - start_time
 
     return {
         "question": question,
         "answer": response.output_text,
         "sources": sources,
         "timing": {
-            "retrieval": round(
-                retrieval_time,
-                2
-            ),
-            "ai": round(
-                ai_time,
-                2
-            ),
-            "total": round(
-                total_time,
-                2
-            )
+            "retrieval": round(retrieval_time, 2),
+            "ai": round(ai_time, 2),
+            "total": round(total_time, 2)
         }
     }

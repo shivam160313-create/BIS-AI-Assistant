@@ -1,17 +1,4 @@
-import chromadb
-
-
-CHROMA_PATH = "chroma_db"
-COLLECTION_NAME = "bis_documents"
-
-
-client = chromadb.PersistentClient(
-    path=CHROMA_PATH
-)
-
-collection = client.get_collection(
-    name=COLLECTION_NAME
-)
+from backend.vector_store import collection
 
 
 def retrieve_documents(query: str, n_results: int = 5):
@@ -54,10 +41,7 @@ def build_context(retrieved_documents):
 
     context_parts = []
 
-    for index, item in enumerate(
-        retrieved_documents,
-        start=1
-    ):
+    for index, item in enumerate(retrieved_documents, start=1):
 
         content = item["content"]
 
@@ -84,9 +68,7 @@ def get_source_names(retrieved_documents):
 
     for item in retrieved_documents:
 
-        filename = item["metadata"].get(
-            "filename"
-        )
+        filename = item["metadata"].get("filename")
 
         if filename and filename not in sources:
             sources.append(filename)

@@ -1,5 +1,6 @@
 import os
 import shutil
+from contextlib import asynccontextmanager
 
 from fastapi import (
     FastAPI,
@@ -27,8 +28,28 @@ from backend.document_qa import (
 from backend.vector_store import (
     extract_text,
     chunk_text,
-    collection
+    collection,
+    ensure_knowledge_base,
+    BASE_DIR
 )
+
+
+UPLOAD_FOLDER = BASE_DIR / "data" / "uploads"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # On startup: if the Chroma collection is empty - which is exactly what
+    # happens on a brand-new FastAPI Cloud deployment with no persisted
+    # chroma_db - automatically build it from the bundled BIS PDFs in data/.
+    # Any failure here is logged, not raised, so a knowledge-base problem
+    # never prevents the API itself from coming up (check /health instead).
+    try:
+        ensure_knowledge_base()
+    except Exception as error:
+        print(f"Knowledge base build failed on startup: {error}")
+
+    yield
 
 
 app = FastAPI(
@@ -37,7 +58,8 @@ app = FastAPI(
         "AI-powered assistant for "
         "Indian Standards and BIS Services"
     ),
-    version="5.0"
+    version="5.0",
+    lifespan=lifespan
 )
 
 
@@ -72,9 +94,18 @@ def root():
 @app.get("/health")
 def health():
 
+    try:
+        indexed_chunks = collection.count()
+        knowledge_base_status = "ready" if indexed_chunks > 0 else "empty"
+    except Exception as error:
+        indexed_chunks = 0
+        knowledge_base_status = f"error: {error}"
+
     return {
         "status": "healthy",
-        "knowledge_base": "connected"
+        "knowledge_base": knowledge_base_status,
+        "indexed_chunks": indexed_chunks,
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY"))
     }
 
 
@@ -152,17 +183,12 @@ async def upload_document(
             )
         }
 
-    upload_folder = "data/uploads"
-
-    os.makedirs(
-        upload_folder,
+    UPLOAD_FOLDER.mkdir(
+        parents=True,
         exist_ok=True
     )
 
-    file_path = os.path.join(
-        upload_folder,
-        filename
-    )
+    file_path = UPLOAD_FOLDER / filename
 
     with open(
         file_path,
@@ -219,7 +245,7 @@ async def upload_document(
             )
 
             metadatas.append({
-                "source": file_path,
+                "source": str(file_path),
                 "category": "uploads",
                 "filename": filename
             })

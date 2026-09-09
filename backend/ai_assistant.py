@@ -1,20 +1,7 @@
-import os
 import time
-import chromadb
-from dotenv import load_dotenv
-from openai import OpenAI
 
-load_dotenv()
-
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    timeout=30.0
-)
-
-chroma_client = chromadb.PersistentClient(path="chroma_db")
-collection = chroma_client.get_collection(
-    name="bis_documents"
-)
+from backend.openai_client import get_client, DEFAULT_MODEL
+from backend.vector_store import collection
 
 
 def get_sources(results):
@@ -51,6 +38,22 @@ def get_context(query):
     )
 
     return results, context, retrieval_time
+
+
+def _error_response(query, results, retrieval_time, total_start, error, key="question"):
+    return {
+        key: query,
+        "answer": (
+            "The AI service is not available right now: "
+            f"{error}"
+        ),
+        "sources": get_sources(results),
+        "timing": {
+            "retrieval": round(retrieval_time, 2),
+            "openai": 0,
+            "total": round(time.perf_counter() - total_start, 2)
+        }
+    }
 
 
 def ask_ai(query, mode="assistant"):
@@ -100,25 +103,24 @@ BIS SOURCES:
 {context}
 """
 
+    try:
+        client = get_client()
+    except RuntimeError as error:
+        return _error_response(query, results, retrieval_time, total_start, error)
+
     openai_start = time.perf_counter()
 
-    response = client.responses.create(
-        model="gpt-5.6-luna",
-        input=prompt,
-        reasoning={
-            "effort": "none"
-        },
-        max_output_tokens=300
-    )
+    try:
+        response = client.responses.create(
+            model=DEFAULT_MODEL,
+            input=prompt,
+            max_output_tokens=300
+        )
+    except Exception as error:
+        return _error_response(query, results, retrieval_time, total_start, error)
 
     openai_time = time.perf_counter() - openai_start
     total_time = time.perf_counter() - total_start
-
-    print("\n" + "=" * 50)
-    print(f"⏱ Retrieval : {retrieval_time:.2f}s")
-    print(f"⏱ OpenAI    : {openai_time:.2f}s")
-    print(f"⏱ Total     : {total_time:.2f}s")
-    print("=" * 50 + "\n")
 
     return {
         "question": query,
@@ -168,25 +170,24 @@ BIS SOURCES:
 {context}
 """
 
+    try:
+        client = get_client()
+    except RuntimeError as error:
+        return _error_response(product, results, retrieval_time, total_start, error, key="product")
+
     openai_start = time.perf_counter()
 
-    response = client.responses.create(
-        model="gpt-5.6-luna",
-        input=prompt,
-        reasoning={
-            "effort": "none"
-        },
-        max_output_tokens=250
-    )
+    try:
+        response = client.responses.create(
+            model=DEFAULT_MODEL,
+            input=prompt,
+            max_output_tokens=250
+        )
+    except Exception as error:
+        return _error_response(product, results, retrieval_time, total_start, error, key="product")
 
     openai_time = time.perf_counter() - openai_start
     total_time = time.perf_counter() - total_start
-
-    print("\n" + "=" * 50)
-    print(f"⏱ Retrieval : {retrieval_time:.2f}s")
-    print(f"⏱ OpenAI    : {openai_time:.2f}s")
-    print(f"⏱ Total     : {total_time:.2f}s")
-    print("=" * 50 + "\n")
 
     return {
         "product": product,
