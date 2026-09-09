@@ -1,14 +1,18 @@
 import time
 
 from backend.openai_client import get_client, DEFAULT_MODEL
-from backend.vector_store import collection, get_status_message_if_not_ready
+from backend.vector_store import (
+    collection,
+    embed_query,
+    get_status_message_if_not_ready,
+)
 
 
 def get_sources(results):
     sources = []
 
     for metadata in results.get("metadatas", [[]])[0]:
-        source = metadata.get("source")
+        source = metadata.get("source") or metadata.get("filename")
 
         if source:
             filename = source.replace("\\", "/").split("/")[-1]
@@ -23,14 +27,16 @@ def get_context(query):
 
     start = time.perf_counter()
 
+    query_embedding = embed_query(query)
+
     results = collection.query(
-        query_texts=[query],
+        query_embeddings=[query_embedding],
         n_results=3
     )
 
     retrieval_time = time.perf_counter() - start
 
-    documents = results["documents"][0]
+    documents = results.get("documents", [[]])[0]
 
     context = "\n\n".join(
         f"SOURCE {i + 1}: {doc}"
@@ -53,7 +59,14 @@ def _not_ready_response(query, message, key="question"):
     }
 
 
-def _error_response(query, results, retrieval_time, total_start, error, key="question"):
+def _error_response(
+    query,
+    results,
+    retrieval_time,
+    total_start,
+    error,
+    key="question"
+):
     return {
         key: query,
         "answer": f"The AI service is not available right now: {error}",
@@ -61,7 +74,10 @@ def _error_response(query, results, retrieval_time, total_start, error, key="que
         "timing": {
             "retrieval": round(retrieval_time, 2),
             "openai": 0,
-            "total": round(time.perf_counter() - total_start, 2)
+            "total": round(
+                time.perf_counter() - total_start,
+                2
+            )
         }
     }
 
@@ -75,7 +91,25 @@ def ask_ai(query, mode="assistant"):
 
     total_start = time.perf_counter()
 
-    results, context, retrieval_time = get_context(query)
+    try:
+        results, context, retrieval_time = get_context(query)
+    except Exception as error:
+        return {
+            "question": query,
+            "answer": f"Knowledge retrieval failed: {error}",
+            "sources": [],
+            "timing": {
+                "retrieval": round(
+                    time.perf_counter() - total_start,
+                    2
+                ),
+                "openai": 0,
+                "total": round(
+                    time.perf_counter() - total_start,
+                    2
+                )
+            }
+        }
 
     if mode == "certification":
         instruction = """
@@ -121,7 +155,13 @@ BIS SOURCES:
     try:
         client = get_client()
     except RuntimeError as error:
-        return _error_response(query, results, retrieval_time, total_start, error)
+        return _error_response(
+            query,
+            results,
+            retrieval_time,
+            total_start,
+            error
+        )
 
     openai_start = time.perf_counter()
 
@@ -132,7 +172,13 @@ BIS SOURCES:
             max_output_tokens=300
         )
     except Exception as error:
-        return _error_response(query, results, retrieval_time, total_start, error)
+        return _error_response(
+            query,
+            results,
+            retrieval_time,
+            total_start,
+            error
+        )
 
     openai_time = time.perf_counter() - openai_start
     total_time = time.perf_counter() - total_start
@@ -166,11 +212,34 @@ def search_standards(product):
     not_ready = get_status_message_if_not_ready()
 
     if not_ready:
-        return _not_ready_response(product, not_ready, key="product")
+        return _not_ready_response(
+            product,
+            not_ready,
+            key="product"
+        )
 
     total_start = time.perf_counter()
 
-    results, context, retrieval_time = get_context(product)
+    try:
+        results, context, retrieval_time = get_context(product)
+    except Exception as error:
+        return {
+            "product": product,
+            "answer": f"Knowledge retrieval failed: {error}",
+            "sources": [],
+            "official_portal": "https://standards.bis.gov.in/",
+            "timing": {
+                "retrieval": round(
+                    time.perf_counter() - total_start,
+                    2
+                ),
+                "openai": 0,
+                "total": round(
+                    time.perf_counter() - total_start,
+                    2
+                )
+            }
+        }
 
     prompt = f"""
 You are a BIS Standards Search Assistant.
@@ -193,7 +262,14 @@ BIS SOURCES:
     try:
         client = get_client()
     except RuntimeError as error:
-        return _error_response(product, results, retrieval_time, total_start, error, key="product")
+        return _error_response(
+            product,
+            results,
+            retrieval_time,
+            total_start,
+            error,
+            key="product"
+        )
 
     openai_start = time.perf_counter()
 
@@ -204,7 +280,14 @@ BIS SOURCES:
             max_output_tokens=250
         )
     except Exception as error:
-        return _error_response(product, results, retrieval_time, total_start, error, key="product")
+        return _error_response(
+            product,
+            results,
+            retrieval_time,
+            total_start,
+            error,
+            key="product"
+        )
 
     openai_time = time.perf_counter() - openai_start
     total_time = time.perf_counter() - total_start
