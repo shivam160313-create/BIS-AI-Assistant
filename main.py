@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
     # IMPORTANT: this must never block.
     #
     # ensure_knowledge_base() is a synchronous, potentially slow function
-    # (it reads 19 PDFs and calls the OpenAI embeddings API). Running it
+    # (it reads 19 PDFs and calls the Gemini embeddings API). Running it
     # directly here - or with `await` on a coroutine that does the work
     # inline - would delay FastAPI's ASGI "startup complete" signal, which
     # is exactly what made FastAPI Cloud's readiness check fail and loop
@@ -114,7 +114,10 @@ def health():
         "knowledge_base": KB_STATUS["state"],
         "knowledge_base_detail": KB_STATUS["detail"],
         "indexed_chunks": indexed_chunks,
-        "openai_configured": bool(os.getenv("OPENAI_API_KEY"))
+        "ai_provider": "google-gemini",
+        "google_api_configured": bool(
+            os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        )
     }
 
 
@@ -122,7 +125,7 @@ def health():
 def rebuild_index():
     """
     Manually re-trigger a knowledge-base build in the background, e.g.
-    after setting OPENAI_API_KEY without wanting to wait for a restart.
+    after setting GOOGLE_API_KEY without wanting to wait for a restart.
 
     Note: this has no authentication. If you expose this publicly long
     term, put an auth dependency on it - it's included here as an

@@ -1,6 +1,6 @@
-import time
+﻿import time
 
-from backend.openai_client import get_client, DEFAULT_MODEL
+from backend.ai_client import get_client
 from backend.vector_store import get_status_message_if_not_ready
 from backend.retriever import (
     retrieve_documents,
@@ -111,7 +111,7 @@ BIS DOCUMENT SOURCES:
 
     try:
         response = client.responses.create(
-            model=DEFAULT_MODEL,
+            model="gemini-3.6-flash",
             input=prompt,
             max_output_tokens=350
         )
@@ -140,3 +140,4 @@ BIS DOCUMENT SOURCES:
             "total": round(total_time, 2)
         }
     }
+

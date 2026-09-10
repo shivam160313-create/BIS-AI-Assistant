@@ -1,12 +1,10 @@
-from backend.vector_store import embed_query, collection
+from backend.vector_store import collection
 
 
 def retrieve_documents(query: str, n_results: int = 5):
 
-    query_embedding = embed_query(query)
-
     results = collection.query(
-        query_embeddings=[query_embedding],
+        query_texts=[query],
         n_results=n_results
     )
 
